@@ -75,6 +75,18 @@ func commands() []command {
 			run:     runStatus,
 		},
 		{
+			name:    "doctor",
+			summary: "Check this installation and explain anything wrong",
+			usage:   "awake doctor",
+			run:     runDoctor,
+		},
+		{
+			name:    "repair",
+			summary: "Apply the safe fixes doctor identified",
+			usage:   "awake repair [--clean-quarantine]",
+			run:     runRepair,
+		},
+		{
 			name:    "version",
 			summary: "Print version and build information",
 			usage:   "awake version",
@@ -198,6 +210,7 @@ Examples:
   awake start --indefinite
                          run until stopped; never the default
   awake status --json    machine-readable state, for scripts
+  awake doctor           check whether anything is wrong
 
 Exit codes:
   0  success

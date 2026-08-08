@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -486,5 +487,148 @@ func TestFlagsAndArgumentsInAnyOrder(t *testing.T) {
 				t.Errorf("--json was not honoured:\n%s", h.stdout.String())
 			}
 		})
+	}
+}
+
+func TestDoctorOnHealthyMachineExitsZero(t *testing.T) {
+	h := newHarness(t)
+
+	// A machine that has never run Awake is healthy, not broken.
+	if code := h.run("doctor"); code != ExitOK {
+		t.Fatalf("doctor = %d, want %d (stdout: %s)", code, ExitOK, h.stdout.String())
+	}
+	if !strings.Contains(h.stdout.String(), "checks:") {
+		t.Errorf("doctor printed no summary:\n%s", h.stdout.String())
+	}
+}
+
+// Exit code 5 means problems were found; warnings alone still exit 0.
+func TestDoctorExitsFiveOnProblems(t *testing.T) {
+	h := newHarness(t)
+	if err := h.store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	if err := os.WriteFile(h.store.SessionPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	if code := h.run("doctor"); code != ExitProblemsFound {
+		t.Fatalf("doctor = %d, want %d (stdout: %s)", code, ExitProblemsFound, h.stdout.String())
+	}
+	if !strings.Contains(h.stdout.String(), "PROBLEM") {
+		t.Errorf("the problem was not shown:\n%s", h.stdout.String())
+	}
+	if !strings.Contains(h.stdout.String(), "awake repair") {
+		t.Error("doctor did not name the command that fixes it")
+	}
+}
+
+func TestDoctorJSONShape(t *testing.T) {
+	h := newHarness(t)
+
+	if code := h.run("doctor", "--json"); code != ExitOK {
+		t.Fatalf("doctor = %d (stderr: %s)", code, h.stderr.String())
+	}
+
+	got := decodeJSON(t, h.stdout.String())
+	for _, field := range []string{"schema_version", "healthy", "summary", "findings"} {
+		if _, ok := got[field]; !ok {
+			t.Errorf("missing field %q in %v", field, got)
+		}
+	}
+
+	findings, ok := got["findings"].([]any)
+	if !ok || len(findings) == 0 {
+		t.Fatalf("findings = %v, want a non-empty list", got["findings"])
+	}
+	first := findings[0].(map[string]any)
+	for _, field := range []string{"check", "status", "detail"} {
+		if _, ok := first[field]; !ok {
+			t.Errorf("finding missing %q: %v", field, first)
+		}
+	}
+}
+
+// Doctor is the dry run for repair: it never changes anything.
+func TestDoctorChangesNothing(t *testing.T) {
+	h := newHarness(t)
+	if err := h.store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	if err := os.WriteFile(h.store.ConfigPath(), []byte("not [ toml"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	h.run("doctor")
+
+	after, err := os.ReadFile(h.store.ConfigPath())
+	if err != nil {
+		t.Fatalf("doctor removed the config: %v", err)
+	}
+	if string(after) != "not [ toml" {
+		t.Error("doctor modified the config")
+	}
+}
+
+func TestRepairFixesAndIsIdempotent(t *testing.T) {
+	h := newHarness(t)
+	if err := h.store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	if err := os.WriteFile(h.store.SessionPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	if code := h.run("repair"); code != ExitOK {
+		t.Fatalf("repair = %d (stderr: %s)", code, h.stderr.String())
+	}
+	if code := h.run("doctor"); code != ExitOK {
+		t.Fatalf("doctor after repair = %d, want %d (stdout: %s)",
+			code, ExitOK, h.stdout.String())
+	}
+
+	// A second repair has nothing left to do.
+	h.stdout.Reset()
+	if code := h.run("repair"); code != ExitOK {
+		t.Fatalf("second repair = %d", code)
+	}
+}
+
+// Repair leaves quarantined files in place and names the flag that deletes
+// them: deleting a user's files is their decision.
+func TestRepairKeepsQuarantineUntilAsked(t *testing.T) {
+	h := newHarness(t)
+	if err := h.store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	if err := os.WriteFile(h.store.SessionPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	h.run("repair")
+
+	found, err := h.store.ListQuarantined()
+	if err != nil {
+		t.Fatalf("ListQuarantined() error = %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d quarantined files, want 1", len(found))
+	}
+
+	h.stdout.Reset()
+	h.run("repair")
+	if !strings.Contains(h.stdout.String(), "--clean-quarantine") {
+		t.Errorf("repair did not name the flag that deletes them:\n%s", h.stdout.String())
+	}
+
+	if code := h.run("repair", "--clean-quarantine"); code != ExitOK {
+		t.Fatalf("repair --clean-quarantine = %d", code)
+	}
+	found, err = h.store.ListQuarantined()
+	if err != nil {
+		t.Fatalf("ListQuarantined() error = %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("%d quarantined files survived --clean-quarantine", len(found))
 	}
 }
