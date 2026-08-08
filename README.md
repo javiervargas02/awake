@@ -200,4 +200,4 @@ major version.
 
 ## License
 
-Not yet chosen — this will be settled before the v0.1.0 release.
+[MIT](LICENSE).
