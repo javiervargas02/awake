@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/javiervargas02/awake/internal/clock"
 	"github.com/javiervargas02/awake/internal/config"
 	"github.com/javiervargas02/awake/internal/lock"
 	"github.com/javiervargas02/awake/internal/platform"
 	"github.com/javiervargas02/awake/internal/store"
+	"github.com/javiervargas02/awake/internal/update"
 )
 
 // Doctor inspects an installation. It never mutates anything.
@@ -321,8 +323,8 @@ func (d *Doctor) checkUpdateCache() Finding {
 		return f
 	}
 
-	var ignored map[string]any
-	if err := d.store.ReadJSON(path, &ignored); errors.Is(err, store.ErrCorrupt) {
+	var cached update.Cache
+	if err := d.store.ReadJSON(path, &cached); errors.Is(err, store.ErrCorrupt) {
 		f.Status = StatusProblem
 		f.Detail = fmt.Sprintf("%s cannot be understood", path)
 		f.Remedy = "run 'awake repair' to discard it; it is only a cache"
@@ -330,8 +332,25 @@ func (d *Doctor) checkUpdateCache() Finding {
 		return f
 	}
 
-	f.Status = StatusOK
-	f.Detail = "readable"
+	// Reporting the age is the only mitigation available for the one attack
+	// ADR-0009 leaves open: a suppressed security notification. A stale answer
+	// should look stale rather than implying freshness.
+	age := cached.Age(d.clock.Now())
+	switch {
+	case cached.CheckedAt.IsZero():
+		f.Status = StatusWarning
+		f.Detail = "no cached update check yet"
+
+	case age > 30*24*time.Hour:
+		f.Status = StatusWarning
+		f.Detail = fmt.Sprintf("last checked %d days ago; you may be unaware of a newer release",
+			int(age.Hours()/24))
+		f.Remedy = "run 'awake update check --force'"
+
+	default:
+		f.Status = StatusOK
+		f.Detail = fmt.Sprintf("last checked %s ago (%s)", age.Round(time.Minute), cached.Result)
+	}
 	return f
 }
 

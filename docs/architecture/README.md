@@ -15,7 +15,7 @@ ADR is superseded deliberately.
 | 2 | [Session lifecycle](session-lifecycle.md) — states, transitions, timing, recovery | Ratified |
 | 3 | [Logging](logging.md) — sinks, event schema, privacy, failure behaviour | Ratified |
 | 4 | [State and repair](state-and-repair.md) — file store, atomicity, doctor/repair specification | Ratified |
-| 5 | Update architecture — manifest, cache, check flow | Blocked |
+| 5 | [Update checking](updates.md) — manifest, cache, check flow | Ratified |
 | 6 | [Platform abstraction](platform.md) — interface, macOS mechanism, lifetime guarantee | Ratified |
 | 7 | [CLI contract](cli-contract.md) — commands, flags, output, exit codes | Ratified |
 | 8 | [Testing strategy](testing.md) — seams, fakes, fault injection, required tests | Ratified |
@@ -25,10 +25,6 @@ largely independent of each other.
 
 ## Status
 
-Seven of eight documents are drafted. **Document 5 is blocked**, not skipped:
-it is gated on an unresolved decision — where the update manifest is hosted
-and how its integrity is verified (see the [ADR index](../adr/README.md)
-known gaps). Writing it before that decision would produce fiction.
-
-It gates M9 alone, the last milestone before v0.1.0, so M1–M8 can proceed
-without it.
+All eight documents are ratified. Document 5 was blocked until
+[ADR-0009](../adr/0009-update-manifest.md) settled where the update manifest
+lives and how its integrity is established.

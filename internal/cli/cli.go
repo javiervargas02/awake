@@ -75,6 +75,12 @@ func commands() []command {
 			run:     runStatus,
 		},
 		{
+			name:    "update",
+			summary: "Check whether a newer release exists (never installs)",
+			usage:   "awake update check [--force]",
+			run:     runUpdate,
+		},
+		{
 			name:    "doctor",
 			summary: "Check this installation and explain anything wrong",
 			usage:   "awake doctor",
@@ -211,6 +217,7 @@ Examples:
                          run until stopped; never the default
   awake status --json    machine-readable state, for scripts
   awake doctor           check whether anything is wrong
+  awake update check     see whether a newer release exists
 
 Exit codes:
   0  success

@@ -31,6 +31,7 @@ tell the difference between a deliberate constraint and an accident.
 | [0006](0006-platform-abstraction-and-process-lifetime.md) | Platform abstraction and the process-lifetime guarantee | Accepted |
 | [0007](0007-configuration-format.md) | Configuration format: TOML, and the first dependency | Accepted |
 | [0008](0008-session-exclusivity.md) | Session exclusivity via an OS advisory lock | Accepted |
+| [0009](0009-update-manifest.md) | Update manifest: a static document, hosted from the repository | Accepted |
 
 ## Known gaps
 
@@ -38,7 +39,6 @@ Decisions that are identified but not yet written, and what they block:
 
 | Topic | Blocks |
 | --- | --- |
-| Update manifest hosting and integrity verification | M9 |
 | Log rotation and retention policy | v0.2 |
 | Detached sessions: process ownership and locking | v0.2 |
 | End-on-input: idle detection within the privacy constraint | v0.2 |

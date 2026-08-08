@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"github.com/javiervargas02/awake/internal/platform"
 	"github.com/javiervargas02/awake/internal/session"
 	"github.com/javiervargas02/awake/internal/store"
+	"github.com/javiervargas02/awake/internal/update"
 )
 
 var base = time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
@@ -702,5 +707,128 @@ func TestInvalidRequestsAreRejected(t *testing.T) {
 				t.Error("a rejected request started the mechanism")
 			}
 		})
+	}
+}
+
+// serveManifest points the service at a local test server and reports whether
+// it was ever contacted.
+func (h *harness) serveManifest(t *testing.T, body string) *int32 {
+	t.Helper()
+
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	h.service.checker = &update.Checker{URL: server.URL, Client: server.Client()}
+	return &hits
+}
+
+const testManifest = `{"schema_version":1,"channels":{"stable":{"version":"0.2.0",
+	"severity":"recommended","notes_url":"https://example.invalid/v0.2.0"}}}`
+
+func TestUpdateCheckReportsAndCaches(t *testing.T) {
+	h := newHarness(t)
+	hits := h.serveManifest(t, testManifest)
+
+	result, err := h.service.CheckUpdate(context.Background(), false)
+	if err != nil {
+		t.Fatalf("CheckUpdate() error = %v", err)
+	}
+	if !result.Available() {
+		t.Fatalf("outcome = %q, want an available update (err: %v)", result.Outcome, result.Err)
+	}
+	if atomic.LoadInt32(hits) != 1 {
+		t.Errorf("the host was contacted %d times, want 1", atomic.LoadInt32(hits))
+	}
+
+	names := h.eventNames(t)
+	for _, want := range []string{
+		logging.EventUpdateCheckStarted,
+		logging.EventUpdateCheckCompleted,
+		logging.EventUpdateAvailable,
+	} {
+		if !contains(names, want) {
+			t.Errorf("missing event %q in %v", want, names)
+		}
+	}
+
+	// A second check inside the interval must not touch the network.
+	second, err := h.service.CheckUpdate(context.Background(), false)
+	if err != nil {
+		t.Fatalf("second CheckUpdate() error = %v", err)
+	}
+	if atomic.LoadInt32(hits) != 1 {
+		t.Errorf("a cached answer still contacted the host (%d hits)", atomic.LoadInt32(hits))
+	}
+	if !second.FromCache {
+		t.Error("the second result did not report itself as cached")
+	}
+
+	// --force ignores the cache.
+	if _, err := h.service.CheckUpdate(context.Background(), true); err != nil {
+		t.Fatalf("forced CheckUpdate() error = %v", err)
+	}
+	if atomic.LoadInt32(hits) != 2 {
+		t.Errorf("--force did not re-check (%d hits)", atomic.LoadInt32(hits))
+	}
+}
+
+// With checking disabled, Awake makes no network request of any kind. This is
+// what makes principle 5's "the only network activity" claim verifiable.
+func TestDisabledUpdatesMakeNoRequest(t *testing.T) {
+	h := newHarness(t)
+	hits := h.serveManifest(t, testManifest)
+
+	if err := h.store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	if err := os.WriteFile(h.store.ConfigPath(),
+		[]byte("[updates]\nenabled = false\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	result, err := h.service.CheckUpdate(context.Background(), true)
+	if err != nil {
+		t.Fatalf("CheckUpdate() error = %v", err)
+	}
+	if result.Outcome != update.OutcomeDisabled {
+		t.Errorf("outcome = %q, want %q", result.Outcome, update.OutcomeDisabled)
+	}
+	if got := atomic.LoadInt32(hits); got != 0 {
+		t.Errorf("the host was contacted %d times with updates disabled; it must be zero", got)
+	}
+}
+
+// An unreachable host is a warning, never an error a command fails over.
+func TestUpdateCheckFailureIsNotAnError(t *testing.T) {
+	h := newHarness(t)
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	client := server.Client()
+	url := server.URL
+	server.Close()
+	h.service.checker = &update.Checker{URL: url, Client: client}
+
+	result, err := h.service.CheckUpdate(context.Background(), true)
+	if err != nil {
+		t.Fatalf("CheckUpdate() returned an error for an unreachable host: %v", err)
+	}
+	if result.Outcome != update.OutcomeFailed {
+		t.Errorf("outcome = %q, want %q", result.Outcome, update.OutcomeFailed)
+	}
+
+	for _, event := range h.events(t) {
+		if event["event"] == logging.EventUpdateCheckCompleted && event["level"] != "warn" {
+			t.Errorf("a failed check logged at %v, want warn", event["level"])
+		}
+	}
+
+	// The failure is cached, so an offline machine does not retry constantly.
+	cached, ok := h.service.LastUpdateCheck()
+	if !ok || cached.Result != update.OutcomeFailed {
+		t.Errorf("the failure was not cached: %+v", cached)
 	}
 }

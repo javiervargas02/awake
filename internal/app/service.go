@@ -20,6 +20,7 @@ import (
 	"github.com/javiervargas02/awake/internal/logging"
 	"github.com/javiervargas02/awake/internal/platform"
 	"github.com/javiervargas02/awake/internal/store"
+	"github.com/javiervargas02/awake/internal/update"
 )
 
 var (
@@ -50,6 +51,10 @@ type Deps struct {
 	Platform   platform.Controller
 	Lock       lock.Guard
 	AppVersion string
+
+	// Checker is optional. Production uses the default, which points at the
+	// compiled-in manifest URL; tests inject one aimed at a local server.
+	Checker *update.Checker
 }
 
 // Service is the application core.
@@ -60,6 +65,7 @@ type Service struct {
 	platform   platform.Controller
 	lock       lock.Guard
 	appVersion string
+	checker    *update.Checker
 }
 
 func New(deps Deps) *Service {
@@ -74,6 +80,7 @@ func New(deps Deps) *Service {
 		platform:   deps.Platform,
 		lock:       deps.Lock,
 		appVersion: deps.AppVersion,
+		checker:    deps.Checker,
 	}
 }
 
