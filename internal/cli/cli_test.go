@@ -643,6 +643,13 @@ func TestRepairKeepsQuarantineUntilAsked(t *testing.T) {
 // real network.
 func (h *harness) withManifest(t *testing.T, body string) {
 	t.Helper()
+	h.withManifestAs(t, body, "0.1.0")
+}
+
+// withManifestAs additionally sets the version the service reports itself as,
+// so tests can exercise a development build's "no comparable version" path.
+func (h *harness) withManifestAs(t *testing.T, body, appVersion string) {
+	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, body)
@@ -656,7 +663,7 @@ func (h *harness) withManifest(t *testing.T, body string) {
 		Logger:     logging.New(logging.Options{Clock: h.clock, Global: &global}),
 		Platform:   h.platform,
 		Lock:       h.lock,
-		AppVersion: "0.1.0",
+		AppVersion: appVersion,
 		Checker:    &update.Checker{URL: server.URL, Client: server.Client()},
 	})
 
@@ -763,5 +770,42 @@ func TestMissingNotesURLIsOmittedCleanly(t *testing.T) {
 	}
 	if !strings.Contains(out, "0.2.0") {
 		t.Errorf("did not report the available version:\n%s", out)
+	}
+}
+
+// A cached answer carries an outcome but no error text. Rendering it must not
+// leak that absence into the user's terminal.
+func TestCachedInconclusiveAnswerReadsWell(t *testing.T) {
+	h := newHarness(t)
+	// A development build has no comparable version, so the outcome is
+	// "unknown" and the reason is only known on the first, live check.
+	h.withManifestAs(t, `{"schema_version":1,"channels":{"stable":{"version":"0.2.0"}}}`, "3b3587c-dirty")
+
+	if code := h.run("update", "check"); code != ExitOK {
+		t.Fatalf("update check = %d", code)
+	}
+	h.stdout.Reset()
+
+	if code := h.run("update", "check"); code != ExitOK {
+		t.Fatalf("cached update check = %d", code)
+	}
+
+	out := h.stdout.String()
+	t.Logf("rendered output:\n%s", out)
+
+	if strings.Contains(out, "no reason given") {
+		t.Errorf("an implementation detail leaked into the output:\n%s", out)
+	}
+	if strings.Contains(out, ": \n") || strings.Contains(out, "versions: .") {
+		t.Errorf("a dangling reason was printed:\n%s", out)
+	}
+	if !strings.Contains(out, "0.2.0") {
+		t.Errorf("the published version was not reported:\n%s", out)
+	}
+	if !strings.Contains(out, "cached answer") {
+		t.Errorf("the answer did not say it was cached:\n%s", out)
+	}
+	if !strings.Contains(out, "Could not compare versions") {
+		t.Fatalf("this test did not exercise the inconclusive path:\n%s", out)
 	}
 }

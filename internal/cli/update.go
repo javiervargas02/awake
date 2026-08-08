@@ -116,13 +116,13 @@ func writeUpdateResult(deps Deps, result update.Result) {
 		fmt.Fprintf(deps.Stdout, "Awake %s is the latest release.\n", result.CurrentVersion)
 
 	case update.OutcomeUnknown:
-		fmt.Fprintf(deps.Stdout, "Could not compare versions: %s\n", reason(result))
+		fmt.Fprintln(deps.Stdout, sentence("Could not compare versions", result))
 		if result.LatestVersion != "" {
 			fmt.Fprintf(deps.Stdout, "The latest published release is %s.\n", result.LatestVersion)
 		}
 
 	default:
-		fmt.Fprintf(deps.Stdout, "Could not check for updates: %s\n", reason(result))
+		fmt.Fprintln(deps.Stdout, sentence("Could not check for updates", result))
 		fmt.Fprintln(deps.Stdout, "This is not a problem with your installation.")
 	}
 
@@ -132,10 +132,15 @@ func writeUpdateResult(deps Deps, result update.Result) {
 	}
 }
 
-func reason(result update.Result) string {
+// sentence renders a headline with the reason appended, when there is one.
+//
+// A cached answer carries an outcome but no error text — the cache stores what
+// happened, not how it was worded — so the reason is genuinely absent rather
+// than missing. Saying "no reason given" would be leaking an implementation
+// detail into the user's terminal.
+func sentence(headline string, result update.Result) string {
 	if result.Err == nil {
-		return "no reason given"
+		return headline + "."
 	}
-	// One sentence, lowercase, no trailing period: it is being embedded.
-	return strings.TrimSuffix(result.Err.Error(), ".")
+	return headline + ": " + strings.TrimSuffix(result.Err.Error(), ".")
 }
