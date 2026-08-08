@@ -25,7 +25,7 @@ something, and reports what it can do. Everything else is above it.
 
 ## The interface
 
-Deliberately narrow — three capabilities, no more:
+Deliberately narrow — four capabilities, no more:
 
 **Describe.** Report what this platform can do: whether the mechanism is
 available, what it is called, and which kinds of keep-awake it supports. This
@@ -40,6 +40,11 @@ silent degradation.
 
 **Stop.** Release the mechanism through the handle. Idempotent: stopping an
 already-stopped handle is not an error, because shutdown paths can overlap.
+
+**Reclaim.** Terminate a mechanism left behind by a previous run — layer 3
+below. It belongs on this interface because identifying a process is
+platform-specific, and because of the rule it must enforce: never terminate a
+PID that cannot be verified as the expected executable.
 
 That is the entire surface. Anything a caller wants beyond it — retries,
 timing, logging, deciding whether a failure ends the session — belongs above
@@ -225,7 +230,7 @@ inconvenience, which is exactly why it is named here.
 
 ## Adding a platform later
 
-1. Implement the three-capability interface for the OS.
+1. Implement the four-capability interface for the OS.
 2. Answer the lifetime question with that platform's own mechanism.
 3. Report capabilities honestly, including what it cannot do.
 4. Add the platform to the composition root.
