@@ -158,17 +158,30 @@ One `repair.performed` per action taken. Repairs log at `warn` because a
 repair means something was wrong — silent self-repair is indistinguishable
 from a bug (ADR-0003).
 
+### Logging itself
+
+| Event | Level | `data` |
+| --- | --- | --- |
+| `log.sink_failed` | warn | `sink` (`session_trace` \| `global`), `error` |
+
+Emitted once per failed destination, never once per event. It is the only
+event whose purpose is to explain a gap in the others: a trace that stops
+mid-session is otherwise indistinguishable from a session that stopped.
+
 `session.start_refused` has no `session_id` — no session was created. It is
 logged because a refusal is a meaningful action: a user who wonders why
 nothing happened deserves a record of it.
 
 ### Additions to the MVP list
 
-`config.unknown_key`, `mode.failed`, and `session.start_refused` are not in
-the MVP document's event set. The first satisfies ADR-0007's "unknown keys
-warn rather than fail"; the second distinguishes *the mechanism died* from
-*the session ended*, which the trace otherwise could not show; the third
-records a refused start, which principle 2 requires. All three are additive.
+`config.unknown_key`, `mode.failed`, `session.start_refused` and
+`log.sink_failed` are not in the MVP document's event set. The first satisfies
+ADR-0007's "unknown keys warn rather than fail"; the second distinguishes *the
+mechanism died* from *the session ended*, which the trace otherwise could not
+show; the third records a refused start, which principle 2 requires; the
+fourth explains a gap in a trace, without which a failed sink would be
+invisible — the one thing principle 2 cannot tolerate in the logging system
+itself. All four are additive.
 
 ## Privacy
 
