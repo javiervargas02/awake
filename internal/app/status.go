@@ -21,6 +21,13 @@ type StatusResult struct {
 	// Remaining is nil for an indefinite session, which has no remaining time.
 	// Callers render that as "no scheduled end" rather than as zero.
 	Remaining *time.Duration
+
+	// Now is the instant this result describes.
+	//
+	// It is returned rather than left for the caller to read, so that a
+	// frontend never has a second opinion about what time it is. The core owns
+	// the clock; everything else renders what it was told.
+	Now time.Time
 }
 
 // Status reports on the session, performing stale detection first so that it
@@ -30,10 +37,12 @@ func (s *Service) Status(ctx context.Context) (*StatusResult, error) {
 		return nil, err
 	}
 
+	now := s.clock.Now()
+
 	record, err := s.store.ReadSession()
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return &StatusResult{}, nil
+		return &StatusResult{Now: now}, nil
 	case err != nil:
 		return nil, err
 	}
@@ -41,10 +50,11 @@ func (s *Service) Status(ctx context.Context) (*StatusResult, error) {
 	result := &StatusResult{
 		Session: record,
 		Running: !record.Status.IsTerminal(),
+		Now:     now,
 	}
 
 	if result.Running {
-		if remaining, ok := record.Remaining(s.clock.Now()); ok {
+		if remaining, ok := record.Remaining(now); ok {
 			result.Remaining = &remaining
 		}
 	}

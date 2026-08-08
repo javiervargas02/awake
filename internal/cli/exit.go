@@ -3,6 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+
+	"github.com/javiervargas02/awake/internal/app"
+	"github.com/javiervargas02/awake/internal/session"
 )
 
 // Exit codes are public API (principle 8). The full table lives in
@@ -56,6 +59,20 @@ func exitCodeFor(err error) int {
 
 	var usage *UsageError
 	if errors.As(err, &usage) {
+		return ExitUsage
+	}
+
+	// Domain errors from the core are mapped here and nowhere else, which is
+	// what makes the exit-code contract testable rather than aspirational.
+	switch {
+	case errors.Is(err, app.ErrSessionRunning),
+		errors.Is(err, app.ErrNoSession),
+		errors.Is(err, app.ErrStopTimeout):
+		return ExitPrecondition
+
+	case errors.Is(err, session.ErrInvalidDuration),
+		errors.Is(err, session.ErrInvalidMode):
+		// A malformed request is the user's mistake, wherever it was caught.
 		return ExitUsage
 	}
 

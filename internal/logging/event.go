@@ -18,10 +18,13 @@ import (
 // additive and leaves this alone.
 const SchemaVersion = 1
 
-// timestampLayout is RFC 3339 with microseconds. Microsecond precision costs
+// TimestampLayout is RFC 3339 with microseconds. Microsecond precision costs
 // nothing and makes ordering unambiguous in the global log, which has
 // concurrent writers from independent processes.
-const timestampLayout = "2006-01-02T15:04:05.000000Z07:00"
+//
+// It is exported so that CLI output uses the same format, and a timestamp seen
+// in `awake status --json` can be matched against the logs without conversion.
+const TimestampLayout = "2006-01-02T15:04:05.000000Z07:00"
 
 // Level classifies an event. Three levels only: info for normal operation,
 // warn for handled degradation, error for something the user asked for that
@@ -62,7 +65,7 @@ func EnvelopeFields() []string {
 
 func newEnvelope(now time.Time, level Level, event, sessionID string, data Fields) envelope {
 	return envelope{
-		TS:            now.UTC().Format(timestampLayout),
+		TS:            now.UTC().Format(TimestampLayout),
 		SchemaVersion: SchemaVersion,
 		Level:         level,
 		Event:         event,

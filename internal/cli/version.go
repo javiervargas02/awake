@@ -1,9 +1,8 @@
 package cli
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 
 	"github.com/javiervargas02/awake/internal/buildinfo"
 )
@@ -18,31 +17,30 @@ type versionOutput struct {
 	buildinfo.Info
 }
 
-func runVersion(args []string, out, _ io.Writer) error {
+// runVersion reports the identity compiled into this binary.
+//
+// It reads no state and creates nothing: the version lives in the binary, not
+// in a file a user could edit (principle 4), so asking a fresh install what it
+// is leaves no trace on disk.
+func runVersion(_ context.Context, args []string, deps Deps) error {
 	var opts options
+
 	fs := newFlagSet("version", &opts)
-	if err := parseFlags(fs, args); err != nil {
+	operands, err := parseFlags(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
+	if len(operands) > 0 {
 		return usagef("version takes no arguments")
 	}
 
-	info := buildinfo.Get()
+	info := deps.Version
 
 	if opts.json {
-		return writeJSON(out, versionOutput{SchemaVersion: 1, Info: info})
+		return writeJSON(deps.Stdout, versionOutput{SchemaVersion: 1, Info: info})
 	}
 
-	fmt.Fprintf(out, "awake %s (commit %s, built %s, %s, %s)\n",
+	fmt.Fprintf(deps.Stdout, "awake %s (commit %s, built %s, %s, %s)\n",
 		info.Version, info.Commit, info.Built, info.GoVersion, info.Platform)
 	return nil
-}
-
-// writeJSON emits one indented JSON object followed by a newline, so that
-// output is readable in a terminal and still parses cleanly when piped.
-func writeJSON(out io.Writer, v any) error {
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
 }

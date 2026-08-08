@@ -4,15 +4,42 @@
 // one core operation, and renders the result. It holds no logic that a future
 // GUI or local API would have to reimplement, and it is the only layer that
 // knows exit codes and human phrasing exist.
+//
+// One rule shapes the output: stdout is a data channel. Anything that is not
+// the command's result — warnings, progress, echoed events — goes to stderr,
+// so that piping a command never yields something a program has to clean up.
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/javiervargas02/awake/internal/app"
+	"github.com/javiervargas02/awake/internal/buildinfo"
 )
+
+// Deps is everything the CLI needs from the composition root.
+//
+// The service arrives as a factory rather than a value so that commands which
+// touch no state — version, help — cause nothing to be created on disk.
+// Installing Awake and asking its version leaves no trace.
+type Deps struct {
+	Stdout io.Writer
+	Stderr io.Writer
+
+	// Interactive reports whether stdout is a terminal. It controls the live
+	// countdown and nothing else: piped output must not gain or lose content.
+	Interactive bool
+
+	Version buildinfo.Info
+
+	// NewService builds the application core and returns a cleanup function.
+	NewService func(verbose bool) (*app.Service, func(), error)
+}
 
 // options holds the flags accepted by every command.
 type options struct {
@@ -20,54 +47,71 @@ type options struct {
 	verbose bool
 }
 
-// command is one entry in the CLI's dispatch table.
 type command struct {
 	name    string
 	summary string
-	run     func(args []string, out io.Writer, errOut io.Writer) error
+	usage   string
+	run     func(ctx context.Context, args []string, deps Deps) error
 }
 
 func commands() []command {
 	return []command{
-		{name: "version", summary: "Print version and build information", run: runVersion},
+		{
+			name:    "start",
+			summary: "Start a session that keeps this computer awake",
+			usage:   "awake start [duration] [--indefinite]",
+			run:     runStart,
+		},
+		{
+			name:    "stop",
+			summary: "End the running session",
+			usage:   "awake stop",
+			run:     runStop,
+		},
+		{
+			name:    "status",
+			summary: "Show the current or most recent session",
+			usage:   "awake status",
+			run:     runStatus,
+		},
+		{
+			name:    "version",
+			summary: "Print version and build information",
+			usage:   "awake version",
+			run:     runVersion,
+		},
 	}
 }
 
 // Run executes a single CLI invocation and returns the process exit code.
-//
-// It takes its output streams as parameters rather than writing to os.Stdout
-// directly, so that tests can capture output without touching the real
-// process. Everything user-facing flows through these two writers.
-func Run(args []string, out, errOut io.Writer) int {
-	err := dispatch(args, out, errOut)
+func Run(ctx context.Context, args []string, deps Deps) int {
+	err := dispatch(ctx, args, deps)
 	if err == nil {
 		return ExitOK
 	}
 
 	code := exitCodeFor(err)
 
-	// A usage error prints the mistake and points at help; anything else is a
-	// plain failure message. Neither goes to stdout: stdout is a data channel.
 	var usage *UsageError
 	if errors.As(err, &usage) {
-		fmt.Fprintf(errOut, "awake: %v\n\nRun 'awake --help' for usage.\n", err)
+		fmt.Fprintf(deps.Stderr, "awake: %v\n\nRun 'awake --help' for usage.\n", err)
 	} else {
-		fmt.Fprintf(errOut, "awake: %v\n", err)
+		fmt.Fprintf(deps.Stderr, "awake: %v\n", err)
 	}
 	return code
 }
 
-func dispatch(args []string, out, errOut io.Writer) error {
+func dispatch(ctx context.Context, args []string, deps Deps) error {
 	// Bare `awake` prints help and succeeds: asking a tool what it does is not
 	// a mistake.
 	if len(args) == 0 {
-		writeHelp(out)
+		writeHelp(deps.Stdout)
 		return nil
 	}
 
 	switch args[0] {
 	case "-h", "--help", "help":
-		writeHelp(out)
+		writeHelp(deps.Stdout)
 		return nil
 	}
 
@@ -77,7 +121,7 @@ func dispatch(args []string, out, errOut io.Writer) error {
 
 	for _, cmd := range commands() {
 		if cmd.name == args[0] {
-			return cmd.run(args[1:], out, errOut)
+			return cmd.run(ctx, args[1:], deps)
 		}
 	}
 
@@ -87,8 +131,8 @@ func dispatch(args []string, out, errOut io.Writer) error {
 // newFlagSet builds a flag set that already carries the global flags, so that
 // every command accepts them identically.
 //
-// Errors are returned rather than printed-and-exited, which is the standard
-// library's default behaviour; we want the caller to decide the exit code.
+// Parse errors are returned rather than printed-and-exited, which is the
+// standard library's default: the caller decides the exit code.
 func newFlagSet(name string, opts *options) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -97,13 +141,38 @@ func newFlagSet(name string, opts *options) *flag.FlagSet {
 	return fs
 }
 
-// parseFlags parses a command's arguments, converting any parse failure into a
-// usage error so it maps to exit code 2.
-func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		return &UsageError{Err: err}
+// parseFlags parses a command's arguments and returns its positional operands.
+//
+// The standard library stops parsing at the first non-flag argument, which
+// would make `awake start 30m --json` a usage error while `awake start --json
+// 30m` worked. Users write the first form, and a tool that rejects it is
+// failing them over an implementation detail. Parsing in a loop — take one
+// operand, resume parsing — accepts flags and operands in any order.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var operands []string
+
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, &UsageError{Err: err}
+		}
+
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return operands, nil
+		}
+
+		operands = append(operands, rest[0])
+		args = rest[1:]
 	}
-	return nil
+}
+
+// service builds the application core, converting a wiring failure into a
+// plain error rather than a panic.
+func service(deps Deps, verbose bool) (*app.Service, func(), error) {
+	if deps.NewService == nil {
+		return nil, nil, errors.New("no application service is configured")
+	}
+	return deps.NewService(verbose)
 }
 
 func writeHelp(out io.Writer) {
@@ -115,22 +184,29 @@ Usage:
 Commands:
 `)
 	for _, cmd := range commands() {
-		fmt.Fprintf(out, "  %-10s %s\n", cmd.name, cmd.summary)
+		fmt.Fprintf(out, "  %-9s %s\n", cmd.name, cmd.summary)
 	}
 	fmt.Fprint(out, `
-Global flags (accepted by every command):
+Global flags (written after the command name):
   --json      emit machine-readable JSON on stdout
   --verbose   mirror log events to stderr
   -h, --help  show this help
+
+Examples:
+  awake start            start a session of the default length
+  awake start 90m        keep this computer awake for 90 minutes
+  awake start --indefinite
+                         run until stopped; never the default
+  awake status --json    machine-readable state, for scripts
 
 Exit codes:
   0  success
   1  unexpected internal error
   2  usage error
-  3  precondition not met
+  3  precondition not met (a session is already running, or none is)
   5  diagnostics found problems
 
-Awake is not a stealth tool. It does not hide its activity, and every
-session leaves an audit trail under ~/.awake/logs.
+Sessions are bounded, logged under ~/.awake/logs, and end on their own.
+Awake is not a stealth tool: it does not hide its activity.
 `)
 }

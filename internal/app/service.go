@@ -77,6 +77,19 @@ func New(deps Deps) *Service {
 	}
 }
 
+// Started records that a command began.
+//
+// The command name is the one thing only the frontend knows, so it is passed
+// in — but the event is built and emitted here, because formatting log events
+// is not the CLI's job. Only the resolved subcommand is recorded: raw
+// arguments are never logged.
+func (s *Service) Started(command string) {
+	s.logger.Info(logging.EventAppStarted, logging.Fields{
+		"app_version": s.appVersion,
+		"command":     command,
+	})
+}
+
 // loadConfig reads configuration and reports what happened, so that every
 // operation logs the same facts without the CLI having to re-derive them.
 //
