@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +20,7 @@ import (
 	"github.com/javiervargas02/awake/internal/logging"
 	"github.com/javiervargas02/awake/internal/platform"
 	"github.com/javiervargas02/awake/internal/store"
+	"github.com/javiervargas02/awake/internal/update"
 )
 
 var base = time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
@@ -26,6 +30,7 @@ var base = time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
 // clock, the platform and the lock.
 type harness struct {
 	deps     Deps
+	service  *app.Service
 	stdout   *bytes.Buffer
 	stderr   *bytes.Buffer
 	clock    *clock.Fake
@@ -62,6 +67,7 @@ func newHarness(t *testing.T) *harness {
 		AppVersion: "0.1.0-test",
 	})
 
+	h.service = service
 	h.deps = Deps{
 		Stdout: &stdout,
 		Stderr: &stderr,
@@ -630,5 +636,132 @@ func TestRepairKeepsQuarantineUntilAsked(t *testing.T) {
 	}
 	if len(found) != 0 {
 		t.Errorf("%d quarantined files survived --clean-quarantine", len(found))
+	}
+}
+
+// withManifest points the harness at a local update host. No test touches the
+// real network.
+func (h *harness) withManifest(t *testing.T, body string) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	var global bytes.Buffer
+	service := app.New(app.Deps{
+		Clock:      h.clock,
+		Store:      h.store,
+		Logger:     logging.New(logging.Options{Clock: h.clock, Global: &global}),
+		Platform:   h.platform,
+		Lock:       h.lock,
+		AppVersion: "0.1.0",
+		Checker:    &update.Checker{URL: server.URL, Client: server.Client()},
+	})
+
+	h.service = service
+	h.deps.NewService = func(bool) (*app.Service, func(), error) {
+		return service, func() {}, nil
+	}
+}
+
+const availableManifest = `{
+  "schema_version": 1,
+  "channels": {
+    "stable": {
+      "version": "0.2.0",
+      "severity": "recommended",
+      "released": "2026-09-01",
+      "notes_url": "https://github.com/javiervargas02/awake/releases/tag/v0.2.0"
+    }
+  }
+}`
+
+// When an update exists, Awake must say where to read about it and how to get
+// it — it never installs anything itself (ADR-0005).
+func TestUpdateAvailablePointsAtTheReleaseNotes(t *testing.T) {
+	h := newHarness(t)
+	h.withManifest(t, availableManifest)
+
+	if code := h.run("update", "check"); code != ExitOK {
+		t.Fatalf("update check = %d (stderr: %s)", code, h.stderr.String())
+	}
+
+	out := h.stdout.String()
+	t.Logf("rendered output:\n%s", out)
+
+	for _, want := range []string{
+		"0.2.0",
+		"https://github.com/javiervargas02/awake/releases/tag/v0.2.0",
+		"does not install",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+// A security release says so, prominently, before the link.
+func TestSecurityReleaseIsCalledOut(t *testing.T) {
+	h := newHarness(t)
+	h.withManifest(t, `{"schema_version":1,"channels":{"stable":{
+		"version":"0.2.1","severity":"security",
+		"notes_url":"https://example.invalid/v0.2.1"}}}`)
+
+	if code := h.run("update", "check"); code != ExitOK {
+		t.Fatalf("update check = %d", code)
+	}
+
+	out := h.stdout.String()
+	t.Logf("rendered output:\n%s", out)
+
+	if !strings.Contains(out, "security release") {
+		t.Errorf("a security release was not called out:\n%s", out)
+	}
+	if !strings.Contains(out, "https://example.invalid/v0.2.1") {
+		t.Errorf("no release notes link:\n%s", out)
+	}
+}
+
+// The notes URL is part of the machine-readable contract too, so a script or a
+// future GUI can link to it without scraping prose.
+func TestUpdateJSONCarriesTheNotesURL(t *testing.T) {
+	h := newHarness(t)
+	h.withManifest(t, availableManifest)
+
+	if code := h.run("update", "check", "--json"); code != ExitOK {
+		t.Fatalf("update check --json = %d (stderr: %s)", code, h.stderr.String())
+	}
+
+	got := decodeJSON(t, h.stdout.String())
+	t.Logf("rendered output:\n%s", h.stdout.String())
+
+	if got["result"] != "update_available" {
+		t.Errorf("result = %v, want update_available", got["result"])
+	}
+	if got["notes_url"] != "https://github.com/javiervargas02/awake/releases/tag/v0.2.0" {
+		t.Errorf("notes_url = %v", got["notes_url"])
+	}
+	if got["severity"] != "recommended" {
+		t.Errorf("severity = %v", got["severity"])
+	}
+}
+
+// A manifest without a notes URL must not print a dangling label.
+func TestMissingNotesURLIsOmittedCleanly(t *testing.T) {
+	h := newHarness(t)
+	h.withManifest(t, `{"schema_version":1,"channels":{"stable":{"version":"0.2.0"}}}`)
+
+	if code := h.run("update", "check"); code != ExitOK {
+		t.Fatalf("update check = %d", code)
+	}
+
+	out := h.stdout.String()
+	if strings.Contains(out, "Release notes:") {
+		t.Errorf("printed an empty release-notes label:\n%s", out)
+	}
+	if !strings.Contains(out, "0.2.0") {
+		t.Errorf("did not report the available version:\n%s", out)
 	}
 }

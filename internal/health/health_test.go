@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/javiervargas02/awake/internal/platform"
 	"github.com/javiervargas02/awake/internal/session"
 	"github.com/javiervargas02/awake/internal/store"
+	"github.com/javiervargas02/awake/internal/update"
 )
 
 var base = time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
@@ -577,4 +579,122 @@ func snapshot(t *testing.T, root string) map[string]string {
 		t.Fatalf("walking %s: %v", root, err)
 	}
 	return files
+}
+
+// seedUpdateCache writes a cached answer without performing a check.
+func (h *harness) seedUpdateCache(t *testing.T, cache update.Cache) {
+	t.Helper()
+	if err := h.store.WriteJSON(h.store.UpdatePath(), cache); err != nil {
+		t.Fatalf("seeding update cache: %v", err)
+	}
+}
+
+// A user who never runs `awake update check` still learns from doctor that a
+// release exists — without doctor making a network request.
+func TestDoctorReportsAvailableUpdate(t *testing.T) {
+	h := newHarness(t)
+	h.healthy(t)
+	h.seedUpdateCache(t, update.Cache{
+		Version: update.CacheVersion, Channel: "stable", CheckedAt: base,
+		Result: update.OutcomeUpdateAvailable, LatestVersion: "0.2.0",
+		Severity: update.SeverityRecommended,
+		NotesURL: "https://example.invalid/releases/v0.2.0",
+	})
+
+	finding := h.find(t, "available update")
+
+	if finding.Status != StatusWarning {
+		t.Errorf("status = %q, want %q", finding.Status, StatusWarning)
+	}
+	if !strings.Contains(finding.Detail, "0.2.0") {
+		t.Errorf("detail does not name the version: %q", finding.Detail)
+	}
+	if !strings.Contains(finding.Remedy, "https://example.invalid/releases/v0.2.0") {
+		t.Errorf("remedy does not point at the release notes: %q", finding.Remedy)
+	}
+	if !strings.Contains(finding.Remedy, "never installs") {
+		t.Errorf("remedy does not say Awake will not install it: %q", finding.Remedy)
+	}
+}
+
+// A security release is called out in the text. It is deliberately still a
+// warning rather than a problem: severity enforces nothing in v0.1.0, and
+// exiting 5 would be a form of enforcement reserved for v0.2.
+func TestDoctorCallsOutSecurityRelease(t *testing.T) {
+	h := newHarness(t)
+	h.healthy(t)
+	h.seedUpdateCache(t, update.Cache{
+		Version: update.CacheVersion, Channel: "stable", CheckedAt: base,
+		Result: update.OutcomeUpdateAvailable, LatestVersion: "0.2.1",
+		Severity: update.SeveritySecurity,
+		NotesURL: "https://example.invalid/releases/v0.2.1",
+	})
+
+	finding := h.find(t, "available update")
+
+	if !strings.Contains(finding.Detail, "security release") {
+		t.Errorf("a security release was not called out: %q", finding.Detail)
+	}
+	if finding.Status != StatusWarning {
+		t.Errorf("status = %q; promoting security to a problem is a v0.2 decision", finding.Status)
+	}
+	if !h.doctor.Diagnose(context.Background()).Healthy() {
+		t.Error("an available update made the installation unhealthy")
+	}
+}
+
+func TestDoctorReportsUpToDate(t *testing.T) {
+	h := newHarness(t)
+	h.healthy(t)
+	h.seedUpdateCache(t, update.Cache{
+		Version: update.CacheVersion, Channel: "stable", CheckedAt: base,
+		Result: update.OutcomeUpToDate, LatestVersion: "0.1.0",
+	})
+
+	finding := h.find(t, "available update")
+
+	if finding.Status != StatusOK {
+		t.Errorf("status = %q, want %q", finding.Status, StatusOK)
+	}
+	if !strings.Contains(finding.Detail, "latest") {
+		t.Errorf("detail = %q", finding.Detail)
+	}
+}
+
+// With checking disabled, doctor says so rather than implying it knows.
+func TestDoctorRespectsDisabledUpdates(t *testing.T) {
+	h := newHarness(t)
+	h.healthy(t)
+	if err := os.WriteFile(h.store.ConfigPath(),
+		[]byte("[updates]\nenabled = false\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	h.seedUpdateCache(t, update.Cache{
+		Version: update.CacheVersion, CheckedAt: base,
+		Result: update.OutcomeUpdateAvailable, LatestVersion: "0.2.0",
+	})
+
+	finding := h.find(t, "available update")
+
+	if finding.Status != StatusOK {
+		t.Errorf("status = %q, want %q when checking is disabled", finding.Status, StatusOK)
+	}
+	if !strings.Contains(finding.Detail, "disabled") {
+		t.Errorf("detail = %q", finding.Detail)
+	}
+}
+
+// Never checked is not a fault; it is simply unknown.
+func TestDoctorHandlesNeverChecked(t *testing.T) {
+	h := newHarness(t)
+	h.healthy(t)
+
+	finding := h.find(t, "available update")
+
+	if finding.Status != StatusOK {
+		t.Errorf("status = %q, want %q", finding.Status, StatusOK)
+	}
+	if finding.Remedy == "" {
+		t.Error("doctor did not say how to find out")
+	}
 }

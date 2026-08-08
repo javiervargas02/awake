@@ -40,14 +40,19 @@ func (d *Doctor) Diagnose(ctx context.Context) Report {
 
 	add := func(f Finding) { report.Findings = append(report.Findings, f) }
 
+	// Loaded once and shared: two checks need it, and reading the file twice
+	// could report two different states if it changed in between.
+	cfg, cfgReport, cfgErr := config.Load(d.store.ConfigPath())
+
 	add(d.checkRoot())
 	add(d.checkPermissions())
-	add(d.checkConfig())
+	add(d.checkConfig(cfgReport, cfgErr))
 	add(d.checkSessionRecord(ctx))
 	add(d.checkLock())
 	add(d.checkLogDirs())
 	add(d.checkWritable())
 	add(d.checkUpdateCache())
+	add(d.checkAvailableUpdate(cfg))
 	add(d.checkPlatform())
 	add(d.checkVerification())
 	add(d.checkQuarantine())
@@ -118,7 +123,7 @@ func (d *Doctor) checkPermissions() Finding {
 	return f
 }
 
-func (d *Doctor) checkConfig() Finding {
+func (d *Doctor) checkConfig(report config.Report, err error) Finding {
 	f := Finding{Check: "configuration"}
 	path := d.store.ConfigPath()
 
@@ -130,7 +135,6 @@ func (d *Doctor) checkConfig() Finding {
 		return f
 	}
 
-	_, report, err := config.Load(path)
 	if err != nil {
 		f.Status = StatusProblem
 		f.Detail = fmt.Sprintf("%s cannot be parsed: %v", path, err)
@@ -351,6 +355,60 @@ func (d *Doctor) checkUpdateCache() Finding {
 		f.Status = StatusOK
 		f.Detail = fmt.Sprintf("last checked %s ago (%s)", age.Round(time.Minute), cached.Result)
 	}
+	return f
+}
+
+// checkAvailableUpdate reports what the last check found, without performing
+// one.
+//
+// This reads the cache and never touches the network, which is what keeps it
+// inside v0.1.0's rule that `awake update check` is the only thing that reaches
+// out. Without it, a user who never runs that command would never learn a
+// release exists — and doctor is where someone looks when they want to know
+// whether anything needs attention.
+func (d *Doctor) checkAvailableUpdate(cfg config.Config) Finding {
+	f := Finding{Check: "available update"}
+
+	if !cfg.Updates.Enabled {
+		f.Status = StatusOK
+		f.Detail = "update checking is disabled; Awake makes no network requests"
+		return f
+	}
+
+	var cached update.Cache
+	if err := d.store.ReadJSON(d.store.UpdatePath(), &cached); err != nil || cached.CheckedAt.IsZero() {
+		f.Status = StatusOK
+		f.Detail = "not known yet"
+		f.Remedy = "run 'awake update check' to find out"
+		return f
+	}
+
+	switch cached.Result {
+	case update.OutcomeUpdateAvailable:
+		f.Status = StatusWarning
+		f.Detail = fmt.Sprintf("Awake %s is available", cached.LatestVersion)
+		if cached.Severity == update.SeveritySecurity {
+			f.Detail += " — this is a security release"
+		}
+
+		// Say where to read about it, and that Awake will not install it.
+		if cached.NotesURL != "" {
+			f.Remedy = "release notes: " + cached.NotesURL + " (Awake never installs updates)"
+		} else {
+			f.Remedy = "run 'awake update check' for details (Awake never installs updates)"
+		}
+
+	case update.OutcomeUpToDate:
+		f.Status = StatusOK
+		f.Detail = "you are on the latest release"
+
+	default:
+		// A failed or inconclusive check is not a fault in the installation.
+		f.Status = StatusOK
+		f.Detail = "the last check did not produce an answer"
+		f.Remedy = "run 'awake update check --force' to try again"
+	}
+
 	return f
 }
 
