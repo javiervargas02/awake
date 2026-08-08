@@ -1,0 +1,10 @@
+# Personal / untracked Claude Code notes — not project policy
+CLAUDE.local.md
+
+# Built binary (produced by `make build`)
+/awake
+/dist/
+
+# Go test and coverage artifacts
+*.out
+*.test
